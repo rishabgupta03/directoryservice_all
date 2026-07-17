@@ -2,9 +2,14 @@
 """
 Control: Directory Service directory RADIUS server uses MS-CHAPv2.
 
-Checks every Directory Service directory in every enabled region that has
-RADIUS (MFA) configured, and verifies the RADIUS authentication protocol is
-set to MS-CHAPv2.
+Checks every Directory Service directory in every enabled region and
+verifies that RADIUS (MFA) is both configured AND set to MS-CHAPv2.
+
+A directory with RADIUS/MFA disabled is treated as NON_COMPLIANT (not
+skipped), since the absence of MFA is itself a compliance failure.
+Directories whose type does not support RADIUS at all (e.g. shared
+directories, where the owner account controls RADIUS settings) are
+still marked SKIPPED, since the check is genuinely not applicable there.
 """
 
 import boto3
@@ -63,6 +68,7 @@ def error_evidence(e):
 
 # RADIUS/MFA is not supported for shared directories - the owner account
 # controls RADIUS settings, not the account the directory is shared into.
+# This is a genuine "not applicable" case, so it stays SKIPPED.
 UNSUPPORTED_TYPES = {"SharedMicrosoftAD"}
 
 REQUIRED_PROTOCOL = "MS-CHAPv2"
@@ -113,7 +119,7 @@ def check_control(session):
             dir_type = directory.get("Type", "Unknown")
             stage = directory.get("Stage", "Unknown")
 
-            # --- Skip directory types that don't support RADIUS/MFA ---
+            # --- Skip directory types that don't support RADIUS/MFA at all ---
             if dir_type in UNSUPPORTED_TYPES:
                 skipped += 1
                 results.append({
@@ -139,19 +145,19 @@ def check_control(session):
             radius_settings = directory.get("RadiusSettings")
             radius_status = directory.get("RadiusStatus", "Disabled")
 
-            # --- RADIUS not configured at all: not applicable ---
+            # --- RADIUS not configured at all: this IS a compliance failure ---
             if not radius_settings or radius_status == "Disabled":
-                skipped += 1
+                non_compliant += 1
                 results.append({
                     "Region": region,
                     "DirectoryId": directory_id,
                     "DirectoryArn": directory_arn,
-                    "Status": "SKIPPED",
-                    "Evidence": "RADIUS/MFA is not configured on this directory"
+                    "Status": "NON_COMPLIANT",
+                    "Evidence": "RADIUS/MFA is not configured on this directory (MFA is not enforced)"
                 })
                 continue
 
-            # --- RADIUS configured but not yet ready ---
+            # --- RADIUS configured but not yet ready (e.g. still creating) ---
             if radius_status != "Completed":
                 skipped += 1
                 results.append({
@@ -216,7 +222,7 @@ def write_csv(results, account_id):
 # ==================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Check Directory Service directories for RADIUS authentication protocol MS-CHAPv2."
+        description="Check Directory Service directories for RADIUS/MFA enabled with MS-CHAPv2 protocol."
     )
     parser.add_argument("-R", "--role-arn", help="IAM Role ARN to assume", default=None)
     args = parser.parse_args()
